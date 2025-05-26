@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Frontend PDF Editor</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.14.305/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.0/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+  <style>
+    .pdf-section {
+      margin-bottom: 2rem;
+      border: 1px solid #ddd;
+      padding: 1rem;
+      border-radius: 6px;
+    }
+    .pdf-title {
+      font-weight: bold;
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .canvas-container {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+    }
+    .canvas-wrapper {
+      position: relative;
+      display: inline-block;
+      border: 1px solid #ccc;
+      padding: 0.25rem;
+      background: #fafafa;
+      flex: 0 0 auto;
+    }
+    canvas {
+      border: 1px solid #000;
+      width: 330px !important;
+      height: auto !important;
+      display: block;
+    }
+    .actions {
+      margin: 1rem 0;
+    }
+    .btn {
+      margin: 0.25rem;
+      padding: 0.5rem 1rem;
+      cursor: pointer;
+      touch-action: auto; /* Allow touch events for buttons */
+    }
+    .rectangle {
+      position: absolute;
+      background: blue;
+      opacity: 1;
+      cursor: move;
+      touch-action: none; /* Prevent default touch behaviors for rectangle */
+    }
+    .resize-handle {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: white;
+      border: 1px solid black;
+      cursor: nwse-resize;
+      touch-action: none; /* Prevent default touch behaviors for resize handle */
+    }
+    .resize-handle.bottom-right {
+      bottom: -5px;
+      right: -5px;
+    }
+  </style>
+</head>
+<body>
+  <h2>Frontend PDF Editor</h2>
+  <input type="file" id="file" accept="application/pdf" multiple />
+  <div class="actions">
+    <button class="btn" onclick="downloadAllPDFs()">Download All PDFs</button>
+    <button class="btn" onclick="downloadAllZips()">Download All ZIPs</button>
+  </div>
+
+  <div id="pdfs-container"></div>
+
+  <script>
+    const pdfsContainer = document.getElementById('pdfs-container');
+    const loadedPDFs = [];
+
+    document.getElementById('file').addEventListener('change', handleFiles);
+
+    async function handleFiles(event) {
+      pdfsContainer.innerHTML = '';
+      loadedPDFs.length = 0;
+
+      const files = event.target.files;
+      if (!files.length) return;
+
+      for (const file of files) {
+        if (file.type !== "application/pdf") continue;
+
+        const arrayBuffer = await file.arrayBuffer();
+        const typedarray = new Uint8Array(arrayBuffer);
+        const pdf = await pdfjsLib.getDocument({ data: typedarray }).promise;
+
+        const pdfSection = document.createElement('div');
+        pdfSection.className = 'pdf-section';
+
+        const title = document.createElement('div');
+        title.className = 'pdf-title';
+        const titleText = document.createElement('span');
+        titleText.textContent = `${file.name} — Total Pages: ${pdf.numPages}`;
+        title.appendChild(titleText);
+        const renameBtn = document.createElement('button');
+        renameBtn.className = 'btn';
+        renameBtn.textContent = 'Rename';
+        let isTouch = false;
+        renameBtn.addEventListener('touchstart', (e) => {
+          e.stopPropagation();
+          e.preventDefault(); // Prevent simulated click
+          isTouch = true;
+          renamePDF(pdfSection, file.name);
+        });
+        renameBtn.addEventListener('click', (e) => {
+          if (isTouch) {
+            isTouch = false; // Reset flag to prevent click after touch
+            return;
+          }
+          renamePDF(pdfSection, file.name);
+        });
+        title.appendChild(renameBtn);
+        pdfSection.appendChild(title);
+
+        const canvasContainer = document.createElement('div');
+        canvasContainer.className = 'canvas-container';
+        pdfSection.appendChild(canvasContainer);
+
+        const pdfRecord = { name: file.name, pages: [], titleElement: titleText, section: pdfSection };
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale: 1.5 });
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+
+          await page.render({ canvasContext: context, viewport }).promise;
+
+          setupCanvasUI(canvas, pdfRecord, canvasContainer);
+          pdfRecord.pages.push(canvas);
+        }
+
+        loadedPDFs.push(pdfRecord);
+        pdfsContainer.appendChild(pdfSection);
+      }
+    }
+
+    function renamePDF(pdfSection, oldName) {
+      const pdfRecord = loadedPDFs.find(pdf => pdf.section === pdfSection);
+      if (!pdfRecord) return;
+
+      const newName = prompt('Enter new PDF name (without .pdf extension):', pdfRecord.name.replace(/\.pdf$/i, ''));
+      if (newName && newName.trim()) {
+        pdfRecord.name = `${newName.trim()}.pdf`;
+        pdfRecord.titleElement.textContent = `${pdfRecord.name} — Total Pages: ${pdfRecord.pages.length}`;
+        // Update delete button handlers
+        const canvasWrappers = pdfSection.querySelectorAll('.canvas-wrapper');
+        canvasWrappers.forEach(wrapper => {
+          const deleteBtn = wrapper.querySelector('button:nth-child(2)');
+          if (deleteBtn) {
+            let isTouch = false;
+            deleteBtn.onclick = () => {
+              if (isTouch) {
+                isTouch = false;
+                return;
+              }
+              deleteCanvas(deleteBtn, pdfRecord.name);
+            };
+            deleteBtn.ontouchstart = (e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              isTouch = true;
+              deleteCanvas(deleteBtn, pdfRecord.name);
+            };
+          }
+        });
+      }
+    }
+
+    function setupCanvasUI(canvas, pdfRecord, container) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'canvas-wrapper';
+
+      const actions = document.createElement('div');
+      actions.innerHTML = `
+        <button class="btn" onclick="rotateCanvas(this)">Rotate</button>
+        <button class="btn" onclick="deleteCanvas(this, '${pdfRecord.name.replace(/'/g, "\\'")}')">Delete</button>
+        <button class="btn" onclick="addRectangle(this)">Add Rectangle</button>
+        <button class="btn" onclick="saveRectangle(this)">Save Rectangle</button>
+      `;
+
+      // Add touch event listeners for buttons with click suppression
+      const buttons = actions.querySelectorAll('button');
+      buttons.forEach((btn, index) => {
+        let isTouch = false;
+        btn.addEventListener('touchstart', (e) => {
+          e.stopPropagation();
+          e.preventDefault(); // Prevent simulated click
+          isTouch = true;
+          if (index === 0) rotateCanvas(btn);
+          else if (index === 1) deleteCanvas(btn, pdfRecord.name);
+          else if (index === 2) addRectangle(btn);
+          else if (index === 3) saveRectangle(btn);
+        });
+        btn.addEventListener('click', (e) => {
+          if (isTouch) {
+            isTouch = false; // Reset flag to prevent click after touch
+            return;
+          }
+          if (index === 0) rotateCanvas(btn);
+          else if (index === 1) deleteCanvas(btn, pdfRecord.name);
+          else if (index === 2) addRectangle(btn);
+          else if (index === 3) saveRectangle(btn);
+        });
+      });
+
+      wrapper.appendChild(actions);
+      wrapper.appendChild(canvas);
+      container.appendChild(wrapper);
+
+      enableDrawing(canvas);
+      setupRectangleInteraction(canvas, wrapper);
+    }
+
+    function addRectangle(btn) {
+      const wrapper = btn.closest('.canvas-wrapper');
+      const canvas = wrapper.querySelector('canvas');
+      const rect = document.createElement('div');
+      rect.className = 'rectangle';
+      const canvasRect = canvas.getBoundingClientRect();
+      const width = 100;
+      const height = 50;
+      rect.style.width = `${width}px`;
+      rect.style.height = `${height}px`;
+      rect.style.left = `${(canvasRect.width - width) / 2}px`;
+      rect.style.top = `${(canvasRect.height - height) / 2}px`;
+
+      // Add resize handle only at bottom-right
+      const handle = document.createElement('div');
+      handle.className = 'resize-handle bottom-right';
+      rect.appendChild(handle);
+
+      wrapper.appendChild(rect);
+    }
+
+    function saveRectangle(btn) {
+      const wrapper = btn.closest('.canvas-wrapper');
+      const canvas = wrapper.querySelector('canvas');
+      const rect = wrapper.querySelector('.rectangle');
+      if (!rect) return;
+
+      const ctx = canvas.getContext('2d');
+      const canvasRect = canvas.getBoundingClientRect();
+      const rectRect = rect.getBoundingClientRect();
+
+      // Calculate position relative to canvas
+      const scale = canvas.width / canvasRect.width; // Account for canvas scaling
+      const x = (rectRect.left - canvasRect.left) * scale;
+      const y = (rectRect.top - canvasRect.top) * scale;
+      const width = rectRect.width * scale;
+      const height = rectRect.height * scale;
+
+      ctx.fillStyle = 'blue';
+      ctx.fillRect(x, y, width, height);
+
+      rect.remove();
+    }
+
+    function setupRectangleInteraction(canvas, wrapper) {
+      let isDragging = false;
+      let isResizing = false;
+      let currentRect = null;
+      let currentHandle = null;
+      let startX, startY, startWidth, startHeight, startLeft, startTop;
+
+      // Mouse events
+      wrapper.addEventListener('mousedown', (e) => {
+        if (e.target.classList.contains('rectangle')) {
+          isDragging = true;
+          currentRect = e.target;
+          const rect = currentRect.getBoundingClientRect();
+          startX = e.clientX;
+          startY = e.clientY;
+          startLeft = rect.left;
+          startTop = rect.top;
+        } else if (e.target.classList.contains('resize-handle')) {
+          isResizing = true;
+          currentHandle = e.target;
+          currentRect = e.target.parentElement;
+          const rect = currentRect.getBoundingClientRect();
+          startX = e.clientX;
+          startY = e.clientY;
+          startWidth = rect.width;
+          startHeight = rect.height;
+          startLeft = rect.left;
+          startTop = rect.top;
+        }
+      });
+
+      // Touch events
+      wrapper.addEventListener('touchstart', (e) => {
+        const touch = e.touches[0];
+        const target = document.elementFromPoint(touch.clientX, touch.clientY);
+        // Only handle touch for rectangle or resize handle, not buttons
+        if (target.classList.contains('rectangle')) {
+          e.preventDefault(); // Prevent default only for rectangle
+          isDragging = true;
+          currentRect = target;
+          const rect = currentRect.getBoundingClientRect();
+          startX = touch.clientX;
+          startY = touch.clientY;
+          startLeft = rect.left;
+          startTop = rect.top;
+        } else if (target.classList.contains('resize-handle')) {
+          e.preventDefault(); // Prevent default only for resize handle
+          isResizing = true;
+          currentHandle = target;
+          currentRect = target.parentElement;
+          const rect = currentRect.getBoundingClientRect();
+          startX = touch.clientX;
+          startY = touch.clientY;
+          startWidth = rect.width;
+          startHeight = rect.height;
+          startLeft = rect.left;
+          startTop = rect.top;
+        }
+      });
+
+      // Mouse move
+      document.addEventListener('mousemove', (e) => {
+        if (isDragging && currentRect) {
+          const dx = e.clientX - startX;
+          const dy = e.clientY - startY;
+          const canvasRect = canvas.getBoundingClientRect();
+          let newLeft = startLeft + dx;
+          let newTop = startTop + dy;
+
+          // Boundary checks
+          newLeft = Math.max(canvasRect.left, Math.min(newLeft, canvasRect.right - currentRect.offsetWidth));
+          newTop = Math.max(canvasRect.top, Math.min(newTop, canvasRect.bottom - currentRect.offsetHeight));
+
+          currentRect.style.left = `${newLeft - canvasRect.left}px`;
+          currentRect.style.top = `${newTop - canvasRect.top}px`;
+        } else if (isResizing && currentRect && currentHandle) {
+          const canvasRect = canvas.getBoundingClientRect();
+          const dx = e.clientX - startX;
+          const dy = e.clientY - startY;
+
+          let newWidth = startWidth;
+          let newHeight = startHeight;
+          let newLeft = startLeft;
+          let newTop = startTop;
+
+          if (currentHandle.classList.contains('bottom-right')) {
+            newWidth = startWidth + dx;
+            newHeight = startHeight + dy;
+          }
+
+          // Boundary checks
+          newWidth = Math.max(0, Math.min(newWidth, canvasRect.width - (newLeft - canvasRect.left)));
+          newHeight = Math.max(0, Math.min(newHeight, canvasRect.height - (newTop - canvasRect.top)));
+          newLeft = Math.max(canvasRect.left, Math.min(newLeft, canvasRect.right - newWidth));
+          newTop = Math.max(canvasRect.top, Math.min(newTop, canvasRect.bottom - newHeight));
+
+          currentRect.style.width = `${newWidth}px`;
+          currentRect.style.height = `${newHeight}px`;
+          currentRect.style.left = `${newLeft - canvasRect.left}px`;
+          currentRect.style.top = `${newTop - canvasRect.top}px`;
+        }
+      });
+
+      // Touch move
+      document.addEventListener('touchmove', (e) => {
+        if (isDragging && currentRect) {
+          e.preventDefault(); // Prevent scrolling for rectangle dragging
+          const touch = e.touches[0];
+          const dx = touch.clientX - startX;
+          const dy = touch.clientY - startY;
+          const canvasRect = canvas.getBoundingClientRect();
+          let newLeft = startLeft + dx;
+          let newTop = startTop + dy;
+
+          // Boundary checks
+          newLeft = Math.max(canvasRect.left, Math.min(newLeft, canvasRect.right - currentRect.offsetWidth));
+          newTop = Math.max(canvasRect.top, Math.min(newTop, canvasRect.bottom - currentRect.offsetHeight));
+
+          currentRect.style.left = `${newLeft - canvasRect.left}px`;
+          currentRect.style.top = `${newTop - canvasRect.top}px`;
+        } else if (isResizing && currentRect && currentHandle) {
+          e.preventDefault(); // Prevent scrolling for resizing
+          const touch = e.touches[0];
+          const canvasRect = canvas.getBoundingClientRect();
+          const dx = touch.clientX - startX;
+          const dy = touch.clientY - startY;
+
+          let newWidth = startWidth;
+          let newHeight = startHeight;
+          let newLeft = startLeft;
+          let newTop = startTop;
+
+          if (currentHandle.classList.contains('bottom-right')) {
+            newWidth = startWidth + dx;
+            newHeight = startHeight + dy;
+          }
+
+          // Boundary checks
+          newWidth = Math.max(0, Math.min(newWidth, canvasRect.width - (newLeft - canvasRect.left)));
+          newHeight = Math.max(0, Math.min(newHeight, canvasRect.height - (newTop - canvasRect.top)));
+          newLeft = Math.max(canvasRect.left, Math.min(newLeft, canvasRect.right - newWidth));
+          newTop = Math.max(canvasRect.top, Math.min(newTop, canvasRect.bottom - newHeight));
+
+          currentRect.style.width = `${newWidth}px`;
+          currentRect.style.height = `${newHeight}px`;
+          currentRect.style.left = `${newLeft - canvasRect.left}px`;
+          currentRect.style.top = `${newTop - canvasRect.top}px`;
+        }
+      });
+
+      // Mouse and touch end
+      document.addEventListener('mouseup', () => {
+        isDragging = false;
+        isResizing = false;
+        currentRect = null;
+        currentHandle = null;
+      });
+
+      document.addEventListener('touchend', () => {
+        isDragging = false;
+        isResizing = false;
+        currentRect = null;
+        currentHandle = null;
+      });
+    }
+
+    function rotateCanvas(btn) {
+      const canvas = btn.parentElement.nextElementSibling;
+      const temp = document.createElement('canvas');
+      const ctx = temp.getContext('2d');
+
+      temp.width = canvas.height;
+      temp.height = canvas.width;
+
+      ctx.translate(temp.width / 2, temp.height / 2);
+      ctx.rotate(Math.PI / 2);
+      ctx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
+
+      canvas.width = temp.width;
+      canvas.height = temp.height;
+      const newCtx = canvas.getContext('2d');
+      newCtx.clearRect(0, 0, canvas.width, canvas.height);
+      newCtx.drawImage(temp, 0, 0);
+    }
+
+    function deleteCanvas(btn, pdfName) {
+      const wrapper = btn.closest('.canvas-wrapper');
+      const canvas = wrapper.querySelector('canvas');
+      wrapper.remove();
+
+      const pdfRecord = loadedPDFs.find(pdf => pdf.name === pdfName);
+      if (!pdfRecord) return;
+
+      const index = pdfRecord.pages.indexOf(canvas);
+      if (index > -1) {
+        pdfRecord.pages.splice(index, 1);
+        pdfRecord.titleElement.textContent = `${pdfRecord.name} — Total Pages: ${pdfRecord.pages.length}`;
+      }
+    }
+
+    function enableDrawing(canvas) {
+      const ctx = canvas.getContext('2d');
+      let drawing = false;
+      let startX, startY;
+
+      canvas.addEventListener('mousedown', (e) => {
+        drawing = true;
+        const rect = canvas.getBoundingClientRect();
+        startX = e.clientX - rect.left;
+        startY = e.clientY - rect.top;
+      });
+
+      canvas.addEventListener('mouseup', (e) => {
+        if (!drawing) return;
+        drawing = false;
+        const rect = canvas.getBoundingClientRect();
+        const endX = e.clientX - rect.left;
+        const endY = e.clientY - rect.top;
+
+        ctx.strokeStyle = 'red';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(startX, startY, endX - startX, endY - startY);
+      });
+    }
+
+    async function downloadPDF(pdfRecord) {
+      const { jsPDF } = window.jspdf;
+      const a4WidthMm = 210;
+      const a4HeightMm = 297;
+      const mmToPt = mm => (mm * 72) / 25.4;
+      const pageWidth = mmToPt(a4WidthMm);
+      const pageHeight = mmToPt(a4HeightMm);
+      const footerHeight = 30;
+
+      let quality = 0.92;
+      let pdf;
+      let pdfBlob;
+      const maxSize = 5 * 1024 * 1024; // 5 MB
+
+      while (true) {
+        pdf = new jsPDF({ unit: 'pt', format: [pageWidth, pageHeight] });
+
+        pdfRecord.pages.forEach((canvas, i) => {
+          if (i > 0) pdf.addPage();
+
+          const maxWidth = pageWidth - 40;
+          const maxHeight = pageHeight - footerHeight - 40;
+
+          const canvasWidth = canvas.width;
+          const canvasHeight = canvas.height;
+
+          const widthRatio = maxWidth / canvasWidth;
+          const heightRatio = maxHeight / canvasHeight;
+          const scale = Math.min(widthRatio, heightRatio, 1);
+
+          const renderWidth = canvasWidth * scale;
+          const renderHeight = canvasHeight * scale;
+
+          const x = (pageWidth - renderWidth) / 2;
+          const y = (maxHeight - renderHeight) / 2 + 20;
+
+          const imgData = canvas.toDataURL('image/jpeg', quality);
+          pdf.addImage(imgData, 'JPEG', x, y, renderWidth, renderHeight);
+
+          const footerText = 'Name of Agency & Address of Agency';
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(12);
+          pdf.text(footerText, 10, pageHeight - 20);
+        });
+
+        pdfBlob = pdf.output('blob');
+        const blobSize = (await new Response(pdfBlob).arrayBuffer()).byteLength;
+
+        if (blobSize <= maxSize || quality <= 0.5) break;
+        quality -= 0.05;
+      }
+
+      saveAs(pdfBlob, pdfRecord.name.replace(/\.pdf$/i, 'OTH.pdf'));
+    }
+
+    function downloadZip(pdfRecord) {
+      if (!pdfRecord.pages.length) {
+        alert(`No pages to zip for ${pdfRecord.name}`);
+        return;
+      }
+      const zip = new JSZip();
+      pdfRecord.pages.forEach((canvas, i) => {
+        const imgData = canvas.toDataURL('image/png').split(',')[1];
+        zip.file(`page_${i + 1}.png`, imgData, { base64: true });
+      });
+      zip.generateAsync({ type: 'blob' }).then(content => {
+        saveAs(content, pdfRecord.name.replace(/\.pdf$/i, 'OTH_pages.zip'));
+      });
+    }
+
+    function downloadAllPDFs() {
+      if (!loadedPDFs.length) {
+        alert('No PDFs loaded.');
+        return;
+      }
+      loadedPDFs.forEach(pdfRecord => downloadPDF(pdfRecord));
+    }
+
+    function downloadAllZips() {
+      if (!loadedPDFs.length) {
+        alert('No PDFs loaded.');
+        return;
+      }
+      loadedPDFs.forEach(pdfRecord => downloadZip(pdfRecord));
+    }
+  </script>
+</body>
+</html>
